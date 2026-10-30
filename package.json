@@ -1,7 +1,7 @@
 {
   "name": "sample-workbench",
   "productName": "采样工作台",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "本地 WAV 采样器与 MIDI 演奏工具",
   "type": "module",

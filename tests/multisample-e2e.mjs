@@ -34,6 +34,29 @@ try {
   await window.waitForFunction(()=>document.querySelector('#sample-status').textContent==='2 / 64');
   assert.match(await message.innerText(),/已添加 2/);
   const fill=async(id,val)=>window.locator('#'+id).fill(String(val));
+  // Set boundaries with the visible waveform before applying the zone.
+  const canvas=window.locator('#waveform-canvas');
+  const mark=async(field,fraction)=>{
+    await window.locator('#waveform-field').selectOption(field);
+    await canvas.scrollIntoViewIfNeeded();
+    const box=await canvas.boundingBox();
+    await window.mouse.click(box.x+box.width*fraction,box.y+box.height/2);
+  };
+  await mark('startSeconds',0.1);
+  assert(Math.abs(Number(await window.locator('#zone-loop-start').inputValue())-0.01)<0.001);
+  await mark('endSeconds',0.9);
+  assert(Math.abs(Number(await window.locator('#zone-loop-end').inputValue())-0.09)<0.001);
+  await mark('loopStartSeconds',0.2);
+  await mark('loopEndSeconds',0.8);
+  for(const [id,expected] of [['zone-start',0.01],['zone-end',0.09],['zone-loop-start',0.02],['zone-loop-end',0.08]])
+    assert(Math.abs(Number(await window.locator('#'+id).inputValue())-expected)<0.001, id);
+  assert.match(await window.locator('#dirty-status').innerText(),/未保存/);
+  await fill('zone-end',0.001);
+  await mark('startSeconds',0.05);
+  assert.equal(Number(await window.locator('#zone-end').inputValue()),0.001);
+  assert.match(await message.innerText(),/请先修正无效的采样时间/);
+  await fill('zone-end',0.09);
+  await window.locator('#apply-zone').click();
   await fill('project-name','测试多采样');
   await fill('zone-name','低力度'); await fill('zone-root',60); await fill('zone-key-low',48); await fill('zone-key-high',72);
   await fill('zone-velocity-low',1); await fill('zone-velocity-high',80); await window.locator('#apply-zone').click();

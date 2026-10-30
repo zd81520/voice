@@ -1,4 +1,4 @@
-/** Parse a Web MIDI message; null means the message is not a note event. */
+/** Parse the MIDI messages used by the sampler. */
 export function parseMidiMessage(data) {
   if (!data || data.length < 3) return null;
   const [status, note, velocity] = data;
@@ -6,6 +6,7 @@ export function parseMidiMessage(data) {
   const kind = status & 0xf0;
   if (kind === 0x90 && velocity > 0) return { type: 'noteOn', note, velocity, channel: status & 0x0f };
   if (kind === 0x80 || (kind === 0x90 && velocity === 0)) return { type: 'noteOff', note, velocity, channel: status & 0x0f };
+  if (kind === 0xb0 && note === 64) return { type: 'sustain', value: velocity, channel: status & 0x0f };
   return null;
 }
 

@@ -6,7 +6,7 @@
 
 - 导入 WAV，将多个采样映射到不同键区和力度范围，支持音区叠加。
 - 设置每个音区的采样播放和循环范围，以及全局 ADSR 包络和音量。
-- 通过屏幕键盘、电脑键盘或 MIDI 输入演奏。
+- 查看采样波形，编辑播放和循环位置；通过屏幕键盘、电脑键盘或 MIDI 输入演奏，支持 MIDI 延音踏板（CC64）。
 - 将采样和设置保存为可移植工程文件，兼容打开旧版工程。
 
 ## 开发与打包
@@ -23,6 +23,7 @@ npm start
 ```sh
 npm test
 node tests/multisample-e2e.mjs
+node tests/midi-e2e.mjs
 node tests/close-guard-e2e.mjs
 ```
 

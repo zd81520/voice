@@ -110,6 +110,9 @@ test('MIDI note-on, zero-velocity note-off, channel and malformed messages', () 
   assert.deepEqual(parseMidiMessage([0x92, 60, 120]), { type: 'noteOn', note: 60, velocity: 120, channel: 2 });
   assert.deepEqual(parseMidiMessage([0x91, 60, 0]), { type: 'noteOff', note: 60, velocity: 0, channel: 1 });
   assert.deepEqual(parseMidiMessage([0x80, 60, 45]), { type: 'noteOff', note: 60, velocity: 45, channel: 0 });
+  assert.deepEqual(parseMidiMessage([0xb2, 64, 127]), { type: 'sustain', value: 127, channel: 2 });
+  assert.deepEqual(parseMidiMessage([0xb2, 64, 0]), { type: 'sustain', value: 0, channel: 2 });
+  assert.equal(parseMidiMessage([0xb2, 64, 128]), null);
   assert.equal(parseMidiMessage([0xb0, 1, 20]), null);
   assert.equal(parseMidiMessage([0x90, 128, 20]), null);
   assert.equal(parseMidiMessage([0x90]), null);
