@@ -96,3 +96,44 @@ test('a pending asynchronous press is cancelled by pedal-up or reset, but not by
   midi.handle({ type: 'sustain', channel: 0, value: 0 });
   assert.equal(pending.size, 0);
 });
+
+test('pitch bend is retained per channel through releases and reset on device detach', () => {
+  const bends = [], presses = [], releases = [];
+  const midi = new MidiPerformance((...args) => presses.push(args), id => releases.push(id), (channel, value) => bends.push([channel, value]));
+  midi.handle({ type: 'pitchBend', channel: 2, value: 16383 });
+  midi.handle({ type: 'pitchBend', channel: 3, value: 0 });
+  midi.handle({ type: 'sustain', channel: 2, value: 127 });
+  midi.handle({ type: 'noteOn', channel: 2, note: 60, velocity: 100 });
+  midi.handle({ type: 'noteOff', channel: 2, note: 60 });
+  assert.equal(presses[0][3], 2);
+  assert.equal(midi.getPitchBend(2), 16383);
+  assert.equal(midi.getPitchBend(1), 8192);
+  midi.releaseNotes();
+  assert.equal(releases.length, 1);
+  assert.equal(midi.getPitchBend(2), 16383);
+  midi.reset();
+  assert.equal(midi.getPitchBend(2), 8192);
+  assert.equal(midi.getPitchBend(3), 8192);
+  assert.deepEqual(bends, [[2, 16383], [3, 0], [2, 8192], [3, 8192]]);
+  midi.reset();
+  assert.equal(bends.length, 4);
+});
+
+test('a pending asynchronous MIDI note sees the latest wheel position when audio resumes', async () => {
+  let resume;
+  const pending = new Map(), sounded = [];
+  const midi = new MidiPerformance(async (source, note, velocity, channel) => {
+    const record = {};
+    pending.set(source, record);
+    await new Promise(resolve => { resume = resolve; });
+    if (pending.get(source) === record) sounded.push([channel, midi.getPitchBend(channel)]);
+  }, source => pending.delete(source));
+  midi.handle({ type: 'noteOn', channel: 1, note: 60, velocity: 100 });
+  midi.handle({ type: 'pitchBend', channel: 1, value: 0 });
+  resume(); await Promise.resolve();
+  assert.deepEqual(sounded, [[1, 0]]);
+  midi.handle({ type: 'noteOn', channel: 2, note: 61, velocity: 100 });
+  midi.reset();
+  resume(); await Promise.resolve();
+  assert.deepEqual(sounded, [[1, 0]]);
+});

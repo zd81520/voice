@@ -59,6 +59,7 @@ try {
   await window.locator('#apply-zone').click();
   await fill('project-name','测试多采样');
   await fill('zone-name','低力度'); await fill('zone-root',60); await fill('zone-key-low',48); await fill('zone-key-high',72);
+  await fill('zone-gain',-6); await fill('zone-pan',-0.75); await fill('zone-tune',17);
   await fill('zone-velocity-low',1); await fill('zone-velocity-high',80); await window.locator('#apply-zone').click();
   await fill('zone-end',0.001);
   await window.getByRole('option',{name:/high.wav/}).click();
@@ -90,6 +91,8 @@ try {
   assert.deepEqual(project.parameters,{attackMs:0,decayMs:100,sustainLevel:0.7,releaseMs:180,gainDb:0,loop:true,filterEnabled:false,filterCutoffHz:12000,filterQ:0.7});
   assert.deepEqual((( {startSeconds,endSeconds,loopStartSeconds,loopEndSeconds} )=>({startSeconds,endSeconds,loopStartSeconds,loopEndSeconds}))(project.zones[0]),{startSeconds:0.01,endSeconds:0.09,loopStartSeconds:0.02,loopEndSeconds:0.08});
   assert.equal(project.zones.length,2);
+  assert.deepEqual(project.zones.map(({zoneGainDb,pan,tuneCents})=>({zoneGainDb,pan,tuneCents})),[
+    {zoneGainDb:-6,pan:-0.75,tuneCents:17},{zoneGainDb:0,pan:0,tuneCents:0}]);
   assert.equal(project.zones[1].endSeconds,null);
   assert.equal(project.zones[1].loopEndSeconds,null);
   assert.deepEqual(Buffer.from(project.zones[0].wavBytes),a);
@@ -104,7 +107,7 @@ try {
     async function render(velocity,note=60){
       const ctx=new OfflineAudioContext(1,4800,48000), e=new SamplerEngine(ctx);
       const zones=[];
-      for(const z of p.zones) { const buffer=await e.decodeSample(z.wavBytes); zones.push({...z,buffer,startSeconds:0,endSeconds:buffer.duration,loopStartSeconds:0,loopEndSeconds:buffer.duration}); }
+      for(const z of p.zones) { const buffer=await e.decodeSample(z.wavBytes); zones.push({...z,buffer,zoneGainDb:0,pan:0,tuneCents:0,startSeconds:0,endSeconds:buffer.duration,loopStartSeconds:0,loopEndSeconds:buffer.duration}); }
       e.replaceZones(zones); e.setParameters({...p.parameters,decayMs:0,sustainLevel:1}); e.noteOn(note,velocity);
       const audio=await ctx.startRendering(); const samples=audio.getChannelData(0);
       function amplitude(freq){let c=0,s=0; for(let i=0;i<samples.length;i++){const x=2*Math.PI*freq*i/48000;c+=samples[i]*Math.cos(x);s+=samples[i]*Math.sin(x)} return 2*Math.hypot(c,s)/samples.length;}
@@ -138,6 +141,37 @@ try {
   assert(Math.abs(synthesis.oneShot[0]-0.8)<0.02 && Math.abs(synthesis.oneShot[2])<0.001,JSON.stringify(synthesis));
   assert(synthesis.loop.every(x=>Math.abs(x-0.8)<0.02),JSON.stringify(synthesis));
   assert(Math.abs(synthesis.adsr[0]-0.4)<0.03 && Math.abs(synthesis.adsr[1]-0.5)<0.03 && Math.abs(synthesis.adsr[2]-0.2)<0.03 && Math.abs(synthesis.adsr[3]-0.1)<0.04 && Math.abs(synthesis.adsr[4])<0.001,JSON.stringify(synthesis));
+  const zoneSound=await window.evaluate(async()=>{
+    const {SamplerEngine}=await import('./sampler.js');
+    async function render(zoneGainDb,pan,tuneCents){
+      const ctx=new OfflineAudioContext(2,48000,48000), e=new SamplerEngine(ctx);
+      const buffer=ctx.createBuffer(1,48000,48000), samples=buffer.getChannelData(0);
+      for(let i=0;i<samples.length;i++) samples[i]=0.2*Math.sin(2*Math.PI*440*i/48000);
+      e.replaceZones([{id:'tone',buffer,rootNote:60,keyLow:0,keyHigh:127,velocityLow:1,velocityHigh:127,zoneGainDb,pan,tuneCents}]);
+      e.setParameters({attackMs:0,decayMs:0,sustainLevel:1,gainDb:0,loop:true});e.noteOn(60,127);
+      const out=await ctx.startRendering();
+      function amplitude(channel,freq){const data=out.getChannelData(channel);let c=0,s=0;for(let i=0;i<data.length;i++){const phase=2*Math.PI*freq*i/48000;c+=data[i]*Math.cos(phase);s+=data[i]*Math.sin(phase)}return 2*Math.hypot(c,s)/data.length;}
+      return {left440:amplitude(0,440),left880:amplitude(0,880),right440:amplitude(1,440),right880:amplitude(1,880)};
+    }
+    return {normal:await render(0,0,0),altered:await render(-6,-1,1200)};
+  });
+  assert(zoneSound.normal.left440>0.13 && zoneSound.normal.right440>0.13,JSON.stringify(zoneSound));
+  assert(zoneSound.altered.left880>0.13 && zoneSound.altered.left880<0.15 && zoneSound.altered.right880<0.001 && zoneSound.altered.left440<0.001,JSON.stringify(zoneSound));
+  // Neutral zone settings must match the old direct output for mono/stereo inputs and outputs.
+  const neutral=await window.evaluate(async()=>{
+    const {SamplerEngine}=await import('./sampler.js');
+    async function render(inputChannels,outputChannels,legacy){
+      const ctx=new OfflineAudioContext(outputChannels,4800,48000), buffer=ctx.createBuffer(inputChannels,4800,48000);
+      for(let channel=0;channel<inputChannels;channel++) buffer.getChannelData(channel).fill(channel===0?0.2:0.4);
+      if(legacy){const source=ctx.createBufferSource();source.buffer=buffer;source.connect(ctx.destination);source.start();}
+      else {const e=new SamplerEngine(ctx);e.replaceZones([{id:'tone',buffer,rootNote:60,keyLow:0,keyHigh:127,velocityLow:1,velocityHigh:127}]);e.setParameters({attackMs:0,decayMs:0,sustainLevel:1,gainDb:0});e.noteOn(60,127);}
+      const out=await ctx.startRendering();return Array.from({length:outputChannels},(_,i)=>out.getChannelData(i)[2400]);
+    }
+    const results=[];
+    for(const inputs of [1,2]) for(const outputs of [1,2]) results.push({inputs,outputs,old:await render(inputs,outputs,true),now:await render(inputs,outputs,false)});
+    return results;
+  });
+  for(const pair of neutral) for(let i=0;i<pair.outputs;i++) assert(Math.abs(pair.old[i]-pair.now[i])<0.00001,JSON.stringify(pair));
   await window.locator('#new-project').click();
   assert.equal(await window.locator('#sample-status').innerText(),'0 / 64');
   await window.locator('#project-input').setInputFiles({name:'instrument.sampler.json',mimeType:'application/json',buffer:Buffer.from(saved)});
@@ -146,6 +180,9 @@ try {
   assert.equal(await window.locator('#project-name').inputValue(),'测试多采样');
   assert.equal(await window.locator('#zone-name').inputValue(),'低力度');
   assert.equal(await window.locator('#zone-velocity-high').inputValue(),'80');
+  assert.equal(Number(await window.locator('#zone-gain').inputValue()),-6);
+  assert.equal(Number(await window.locator('#zone-pan').inputValue()),-0.75);
+  assert.equal(Number(await window.locator('#zone-tune').inputValue()),17);
   assert.equal(await window.locator('#release').inputValue(),'180');
   assert.equal(await window.locator('#decay').inputValue(),'100');
   assert.equal(await window.locator('#sustain').inputValue(),'0.7');
@@ -166,8 +203,17 @@ try {
   assert.deepEqual(Buffer.from(restored.zones[1].wavBytes),b);
   assert.deepEqual(restored.parameters,project.parameters);
   assert.deepEqual(restored.zones.map(({wavBytes,...z})=>z),project.zones.map(({wavBytes,...z})=>z));
+  const version3=JSON.parse(saved); version3.version=3;
+  for(const z of version3.zones) for(const key of ['zoneGainDb','pan','tuneCents']) delete z[key];
+  await window.evaluate(()=>{ document.querySelector('#message').textContent=''; });
+  await window.locator('#project-input').setInputFiles({name:'version3.sampler.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(version3))});
+  await message.getByText('工程已打开。').waitFor();
+  assert.equal(Number(await window.locator('#zone-gain').inputValue()),0);
+  assert.equal(Number(await window.locator('#zone-pan').inputValue()),0);
+  assert.equal(Number(await window.locator('#zone-tune').inputValue()),0);
   const version2=JSON.parse(saved); version2.version=2;
   delete version2.parameters.filterEnabled; delete version2.parameters.filterCutoffHz; delete version2.parameters.filterQ;
+  for(const z of version2.zones) for(const key of ['zoneGainDb','pan','tuneCents']) delete z[key];
   await window.evaluate(()=>{ document.querySelector('#message').textContent=''; });
   await window.locator('#project-input').setInputFiles({name:'version2.sampler.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(version2))});
   await message.getByText('工程已打开。').waitFor();
@@ -176,7 +222,7 @@ try {
   const legacy=JSON.parse(saved); legacy.version=1;
   delete legacy.parameters.decayMs; delete legacy.parameters.sustainLevel;
   delete legacy.parameters.filterEnabled; delete legacy.parameters.filterCutoffHz; delete legacy.parameters.filterQ;
-  for(const z of legacy.zones) for(const key of ['startSeconds','endSeconds','loopStartSeconds','loopEndSeconds']) delete z[key];
+  for(const z of legacy.zones) for(const key of ['zoneGainDb','pan','tuneCents','startSeconds','endSeconds','loopStartSeconds','loopEndSeconds']) delete z[key];
   await window.evaluate(()=>{ document.querySelector('#message').textContent=''; });
   await window.locator('#project-input').setInputFiles({name:'legacy.sampler.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(legacy))});
   await message.getByText('工程已打开。').waitFor();

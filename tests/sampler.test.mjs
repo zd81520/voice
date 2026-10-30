@@ -14,6 +14,7 @@ class Node {
 }
 class Gain extends Node { constructor() { super(); this.gain = new Param(); } }
 class Filter extends Node { constructor() { super(); this.frequency = new Param(); this.Q = new Param(); } }
+class Panner extends Node { constructor() { super(); this.pan = new Param(); } }
 class Source extends Node {
   constructor() { super(); this.playbackRate = new Param(); this.stops = []; }
   start(...args) { this.started = args[0]; this.startArgs = args; }
@@ -24,6 +25,7 @@ class Context {
   constructor() { this.currentTime = 0; this.destination = {}; this.sources = []; this.decodes = []; }
   createGain() { return new Gain(); }
   createBiquadFilter() { return new Filter(); }
+  createStereoPanner() { return new Panner(); }
   createBufferSource() { const source = new Source(); this.sources.push(source); return source; }
   decodeAudioData(data) { return new Promise((resolve, reject) => this.decodes.push({ data, resolve, reject })); }
 }
@@ -114,10 +116,46 @@ test('MIDI note-on, zero-velocity note-off, channel and malformed messages', () 
   assert.deepEqual(parseMidiMessage([0x80, 60, 45]), { type: 'noteOff', note: 60, velocity: 45, channel: 0 });
   assert.deepEqual(parseMidiMessage([0xb2, 64, 127]), { type: 'sustain', value: 127, channel: 2 });
   assert.deepEqual(parseMidiMessage([0xb2, 64, 0]), { type: 'sustain', value: 0, channel: 2 });
+  assert.deepEqual(parseMidiMessage([0xe3, 0, 0]), { type: 'pitchBend', value: 0, channel: 3 });
+  assert.deepEqual(parseMidiMessage([0xe3, 0, 64]), { type: 'pitchBend', value: 8192, channel: 3 });
+  assert.deepEqual(parseMidiMessage([0xe3, 127, 127]), { type: 'pitchBend', value: 16383, channel: 3 });
+  assert.equal(parseMidiMessage([0xe3, 128, 64]), null);
   assert.equal(parseMidiMessage([0xb2, 64, 128]), null);
   assert.equal(parseMidiMessage([0xb0, 1, 20]), null);
   assert.equal(parseMidiMessage([0x90, 128, 20]), null);
   assert.equal(parseMidiMessage([0x90]), null);
+});
+
+test('14-bit pitch bend is channel-specific for new, layered, held and releasing voices', () => {
+  const context = new Context();
+  const engine = new SamplerEngine(context);
+  engine.replaceZones([zone('a'), zone('b', { rootNote: 48 })]);
+  engine.setPitchBend(0, 16383);
+  engine.noteOn(60, 127, 'midi-0', 0);
+  engine.noteOn(60, 127, 'midi-1', 1);
+  engine.noteOn(60, 127, 'keyboard');
+  const up = 2 ** (2 / 12), down = 2 ** (-2 / 12);
+  assert.equal(context.sources[0].playbackRate.value, up);
+  assert.ok(Math.abs(context.sources[1].playbackRate.value - 2 * up) < 1e-12);
+  assert.equal(context.sources[2].playbackRate.value, 1);
+  assert.equal(context.sources[4].playbackRate.value, 1);
+  engine.noteOff(60, 'midi-0');
+  engine.setPitchBend(0, 0);
+  assert.equal(context.sources[0].playbackRate.value, down);
+  assert.ok(Math.abs(context.sources[1].playbackRate.value - 2 * down) < 1e-12);
+  assert.equal(context.sources[2].playbackRate.value, 1);
+  assert.equal(context.sources[4].playbackRate.value, 1);
+  engine.noteOn(60, 127, 'midi-0-again', 0);
+  assert.equal(context.sources[6].playbackRate.value, down);
+  engine.setParameters({ gainDb: -12 });
+  assert.equal(context.sources[6].playbackRate.value, down);
+  engine.setPitchBend(0, 8192);
+  assert.equal(context.sources[0].playbackRate.value, 1);
+  assert.equal(context.sources[6].playbackRate.value, 1);
+  for (const [channel, value] of [[-1, 8192], [16, 8192], [0, -1], [0, 16384], [0, 1.5]]) {
+    assert.throws(() => engine.setPitchBend(channel, value), RangeError);
+  }
+  assert.throws(() => engine.noteOn(60, 100, 'x', 16), RangeError);
 });
 
 test('polyphony is bounded and ended nodes are disconnected', async () => {
@@ -182,6 +220,68 @@ test('invalid replacement retains sounding voices and old zones; successful repl
   assert.equal(context.sources[0].disconnected, true);
   engine.noteOn(60);
   assert.equal(context.sources.length, 2);
+});
+
+test('zone gain, pan and tuning combine independently with velocity, envelope and pitch bend', () => {
+  const context = new Context();
+  const engine = new SamplerEngine(context);
+  engine.replaceZones([
+    zone('left', { zoneGainDb: 6, pan: -1, tuneCents: 100 }),
+    zone('right', { zoneGainDb: -6, pan: 1, tuneCents: -100 }),
+  ]);
+  engine.setParameters({ attackMs: 200, decayMs: 100, sustainLevel: 0.5, releaseMs: 100 });
+  engine.setPitchBend(2, 16383);
+  engine.noteOn(60, 64, 'midi', 2);
+  const [left, right] = [...engine.voices];
+  assert.ok(Math.abs(left.peak - (64 / 127 * 10 ** (6 / 20))) < 1e-12);
+  assert.ok(Math.abs(right.peak - (64 / 127 * 10 ** (-6 / 20))) < 1e-12);
+  assert.equal(left.panner.pan.value, -1);
+  assert.equal(right.panner.pan.value, 1);
+  assert.ok(Math.abs(left.source.playbackRate.value - 2 ** (3 / 12)) < 1e-12);
+  assert.ok(Math.abs(right.source.playbackRate.value - 2 ** (1 / 12)) < 1e-12);
+  engine.setPitchBend(2, 8192);
+  assert.ok(Math.abs(left.source.playbackRate.value - 2 ** (1 / 12)) < 1e-12);
+  assert.ok(Math.abs(right.source.playbackRate.value - 2 ** (-1 / 12)) < 1e-12);
+  context.currentTime = 0.1;
+  engine.noteOff(60, 'midi');
+  assert.ok(Math.abs(left.gain.gain.events.at(-2)[1] - left.peak * 0.5) < 1e-12);
+  assert.ok(Math.abs(right.gain.gain.events.at(-2)[1] - right.peak * 0.5) < 1e-12);
+  assert.equal(left.gain.gain.events.at(-1)[1], 0);
+  left.source.finish();
+  assert.equal(left.panner.disconnected, true);
+  engine.dispose();
+  assert.equal(right.panner.disconnected, true);
+});
+
+test('default sound controls preserve stereo level and compensate mono center panning', () => {
+  const context = new Context();
+  const engine = new SamplerEngine(context);
+  engine.replaceZones([zone('stereo'), zone('mono', { buffer: { ...sample, numberOfChannels: 1 } })]);
+  engine.noteOn(60, 127);
+  const [stereo, mono] = [...engine.voices];
+  assert.equal(stereo.peak, 1);
+  assert.equal(mono.peak, Math.SQRT2);
+  assert.equal(stereo.panner.pan.value, 0);
+  assert.equal(mono.panner.pan.value, 0);
+  assert.equal(stereo.source.playbackRate.value, 1);
+  engine.dispose();
+});
+
+test('invalid zone sound controls leave the sounding instrument untouched', () => {
+  const context = new Context();
+  const engine = new SamplerEngine(context);
+  engine.replaceZones([zone('original')]);
+  engine.noteOn(60);
+  for (const changes of [
+    { zoneGainDb: -48.1 }, { zoneGainDb: 12.1 }, { zoneGainDb: Infinity },
+    { pan: -1.01 }, { pan: 1.01 }, { pan: NaN },
+    { tuneCents: -1200.1 }, { tuneCents: 1200.1 }, { tuneCents: Infinity },
+  ]) assert.throws(() => engine.replaceZones([zone('invalid', changes)]), RangeError);
+  assert.equal(context.sources[0].stops.length, 0);
+  assert.equal(engine.zones[0].id, 'original');
+  engine.replaceZones([zone('limits', { zoneGainDb: -48, pan: 1, tuneCents: -1200 })]);
+  engine.replaceZones([zone('limits', { zoneGainDb: 12, pan: -1, tuneCents: 1200 })]);
+  engine.dispose();
 });
 
 test('decoding does not change zones; replacement supersedes an in-flight legacy load', async () => {
@@ -313,7 +413,8 @@ test('lowpass is bypassed by default, updates playing voices and returns to bypa
   assert.equal(engine.filter.Q.value, 0.7);
   engine.noteOn(60, 127);
   const voice = [...engine.voices][0];
-  assert.equal(voice.gain.target, engine.master);
+  assert.equal(voice.gain.target, voice.panner);
+  assert.equal(voice.panner.target, engine.master);
   context.currentTime = 0.5;
   engine.setParameters({ filterEnabled: true, filterCutoffHz: 500, filterQ: 2 });
   assert.equal(engine.master.target, engine.filter);

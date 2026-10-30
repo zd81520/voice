@@ -4,17 +4,20 @@ import { serializeProject, parseProject, PROJECT_LIMITS } from '../renderer/proj
 
 const filterDefaults = { filterEnabled: false, filterCutoffHz: 12000, filterQ: 0.7 };
 const parameters = { attackMs: 5, decayMs: 200, sustainLevel: 0.7, releaseMs: 100, gainDb: -6, loop: false, filterEnabled: true, filterCutoffHz: 2500, filterQ: 1.2 };
-const zone = (id = 'one') => ({ id, name: '钢琴 C4.wav', rootNote: 60, keyLow: 48, keyHigh: 72, velocityLow: 1, velocityHigh: 127, startSeconds: 0.1, endSeconds: 1.5, loopStartSeconds: 0.4, loopEndSeconds: 1.2, wavBytes: Uint8Array.from([0, 1, 2, 253, 254, 255]).buffer });
+const zoneDefaults = { zoneGainDb: 0, pan: 0, tuneCents: 0 };
+const zone = (id = 'one') => ({ id, name: '钢琴 C4.wav', rootNote: 60, keyLow: 48, keyHigh: 72, velocityLow: 1, velocityHigh: 127, startSeconds: 0.1, endSeconds: 1.5, loopStartSeconds: 0.4, loopEndSeconds: 1.2, ...zoneDefaults, wavBytes: Uint8Array.from([0, 1, 2, 253, 254, 255]).buffer });
 const project = () => ({ name: '我的音色', parameters: { ...parameters }, zones: [zone(), { ...zone('two'), keyLow: 73, keyHigh: 96, velocityLow: 80 }] });
 
 test('portable project round trip keeps sample bytes, Unicode, mappings and settings', () => {
   const original = project();
+  Object.assign(original.zones[0], { zoneGainDb: -12, pan: -0.4, tuneCents: 73.5 });
+  Object.assign(original.zones[1], { zoneGainDb: 3, pan: 0.6, tuneCents: -50 });
   const text = serializeProject(original);
   const parsed = parseProject(text);
   assert.equal(parsed.name, original.name);
   assert.deepEqual(parsed.parameters, original.parameters);
   assert.deepEqual(parsed.zones, original.zones);
-  assert.equal(JSON.parse(text).version, 3);
+  assert.equal(JSON.parse(text).version, 4);
 });
 
 test('version 1 projects migrate to matching envelope and full sample defaults', () => {
@@ -36,6 +39,7 @@ test('version 2 projects load filter defaults without changing their sample ends
     const legacy = JSON.parse(serializeProject(project()));
     legacy.version = 2;
     for (const key of Object.keys(filterDefaults)) delete legacy.parameters[key];
+    for (const z of legacy.zones) for (const key of Object.keys(zoneDefaults)) delete z[key];
     Object.assign(legacy.zones[0], { endSeconds, loopEndSeconds });
     const migrated = parseProject(JSON.stringify(legacy));
     assert.deepEqual(migrated.parameters, { ...legacy.parameters, ...filterDefaults });
@@ -45,7 +49,23 @@ test('version 2 projects load filter defaults without changing their sample ends
   }
 });
 
-test('v3 round trip preserves independent playback and loop ends following the sample', () => {
+test('version 3 migrates neutral per-zone settings and preserves sample ends', () => {
+  const legacy = JSON.parse(serializeProject(project()));
+  legacy.version = 3;
+  for (const z of legacy.zones) for (const key of Object.keys(zoneDefaults)) delete z[key];
+  legacy.zones[0].endSeconds = null;
+  legacy.zones[0].loopEndSeconds = null;
+  const migrated = parseProject(JSON.stringify(legacy));
+  assert.deepEqual(migrated.parameters, project().parameters);
+  for (const z of migrated.zones) {
+    for (const [key, value] of Object.entries(zoneDefaults)) assert.equal(z[key], value);
+  }
+  assert.equal(migrated.zones[0].endSeconds, null);
+  assert.equal(migrated.zones[0].loopEndSeconds, null);
+  assert.deepEqual(parseProject(serializeProject(migrated)), migrated);
+});
+
+test('v4 round trip preserves independent playback and loop ends following the sample', () => {
   for (const [endSeconds, loopEndSeconds] of [[null, null], [null, 1.2], [1.5, null], [1.5, 1.2]]) {
     const original = project();
     Object.assign(original.zones[0], { endSeconds, loopEndSeconds });
@@ -53,10 +73,18 @@ test('v3 round trip preserves independent playback and loop ends following the s
   }
 });
 
-test('v3 accepts both inclusive filter parameter limits', () => {
+test('v4 accepts both inclusive filter parameter limits', () => {
   for (const [filterCutoffHz, filterQ] of [[20, 0.1], [20000, 20]]) {
     const original = project();
     Object.assign(original.parameters, { filterCutoffHz, filterQ });
+    assert.deepEqual(parseProject(serializeProject(original)), original);
+  }
+});
+
+test('v4 accepts inclusive per-zone sound limits and fractional values', () => {
+  for (const [zoneGainDb, pan, tuneCents] of [[-48, -1, -1200], [12, 1, 1200], [-1.25, 0.123, 0.5]]) {
+    const original = project();
+    Object.assign(original.zones[0], { zoneGainDb, pan, tuneCents });
     assert.deepEqual(parseProject(serializeProject(original)), original);
   }
 });
@@ -77,7 +105,7 @@ test('validate knowable ordering even when ends follow sample duration', () => {
 test('reject unsupported version, malformed schema, duplicate IDs and invalid mappings', () => {
   const source = JSON.parse(serializeProject(project()));
   for (const change of [
-    o => o.version = 4,
+    o => o.version = 5,
     o => o.extra = true,
     o => o.zones[1].id = o.zones[0].id,
     o => o.zones[0].keyLow = 90,
@@ -97,6 +125,15 @@ test('reject unsupported version, malformed schema, duplicate IDs and invalid ma
     o => o.zones[0].loopEndSeconds = o.zones[0].loopStartSeconds,
     o => o.zones[0].loopEndSeconds = o.zones[0].endSeconds + 0.01,
     o => delete o.zones[0].loopEndSeconds,
+    o => o.zones[0].zoneGainDb = -48.01,
+    o => o.zones[0].zoneGainDb = 12.01,
+    o => o.zones[0].pan = -1.01,
+    o => o.zones[0].pan = 1.01,
+    o => o.zones[0].tuneCents = -1200.01,
+    o => o.zones[0].tuneCents = 1200.01,
+    o => o.zones[0].pan = null,
+    o => o.zones[0].tuneCents = '0',
+    o => delete o.zones[0].zoneGainDb,
   ]) {
     const invalid = structuredClone(source); change(invalid);
     assert.throws(() => parseProject(JSON.stringify(invalid)));
@@ -113,6 +150,9 @@ test('reject non-finite values before serializing', () => {
     p => p.zones[0].startSeconds = NaN,
     p => p.zones[0].endSeconds = Infinity,
     p => p.zones[0].loopStartSeconds = -Infinity,
+    p => p.zones[0].zoneGainDb = NaN,
+    p => p.zones[0].pan = Infinity,
+    p => p.zones[0].tuneCents = -Infinity,
   ]) {
     const invalid = project(); change(invalid);
     assert.throws(() => serializeProject(invalid));

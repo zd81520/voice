@@ -22,9 +22,9 @@ try {
     const port = { id: 'fake', name: '测试键盘', state: 'connected', onmidimessage: null };
     window.fakeMidi = { inputs: new Map([['fake', port]]), onstatechange: null, port };
     Object.defineProperty(navigator, 'requestMIDIAccess', { configurable: true, value: async () => window.fakeMidi });
-    window.events = { starts: 0, stops: 0 };
+    window.events = { starts: 0, stops: 0, sources: [] };
     const start = AudioBufferSourceNode.prototype.start, stop = AudioBufferSourceNode.prototype.stop;
-    AudioBufferSourceNode.prototype.start = function(...args) { window.events.starts++; return start.apply(this, args); };
+    AudioBufferSourceNode.prototype.start = function(...args) { window.events.starts++; window.events.sources.push(this); return start.apply(this, args); };
     AudioBufferSourceNode.prototype.stop = function(...args) { window.events.stops++; return stop.apply(this, args); };
   });
   await win.locator('#file-input').setInputFiles({ name: 'test.wav', mimeType: 'audio/wav', buffer: wav });
@@ -37,10 +37,16 @@ try {
   await win.keyboard.down('z');
   await send([0xb0, 64, 127]); await send([0x90, 60, 100]);
   await win.waitForFunction(() => window.events.starts === 2);
+  await send([0xe0, 127, 127]);
+  await win.waitForFunction(() => Math.abs(window.events.sources[1].playbackRate.value - 2 ** (2 / 12)) < 0.001);
+  assert.equal(await win.evaluate(() => window.events.sources[0].playbackRate.value), 0.5);
   await send([0x80, 60, 0]);
   assert.equal((await win.evaluate(() => window.events)).stops, 0);
+  await send([0xe0, 0, 0]);
+  await win.waitForFunction(() => Math.abs(window.events.sources[1].playbackRate.value - 2 ** (-2 / 12)) < 0.001);
   await send([0x91, 60, 100]);
   await win.waitForFunction(() => window.events.starts === 3);
+  assert.equal(await win.evaluate(() => window.events.sources[2].playbackRate.value), 1);
   await send([0x81, 60, 0]);
   assert.equal((await win.evaluate(() => window.events)).stops, 1);
   await send([0xb0, 64, 0]);
@@ -70,16 +76,23 @@ try {
   assert(stoppedAfterReplace >= 6);
   await send([0x90, 60, 100]);
   await win.waitForFunction(() => window.events.starts === 7);
+  await win.waitForFunction(() => Math.abs(window.events.sources[6].playbackRate.value - 2 ** (-2 / 12)) < 0.001);
   await send([0x80, 60, 0]);
   assert.equal((await win.evaluate(() => window.events)).stops, stoppedAfterReplace);
   await win.evaluate(() => { window.fakeMidi.port.state = 'disconnected'; window.fakeMidi.onstatechange(); });
   assert.equal((await win.evaluate(() => window.events)).stops, stoppedAfterReplace + 1);
   assert.match(await win.locator('#midi-status').innerText(), /未发现 MIDI/);
+  await win.evaluate(() => { window.fakeMidi.port.state = 'connected'; window.fakeMidi.onstatechange(); });
+  await win.locator('#midi-device').selectOption('fake');
+  await send([0x90, 60, 100]);
+  await win.waitForFunction(() => window.events.starts === 8);
+  assert.equal(await win.evaluate(() => window.events.sources[7].playbackRate.value), 1);
+  await send([0x80, 60, 0]);
   win.once('dialog', dialog => dialog.accept());
   await win.locator('#new-project').click();
   assert.equal(await win.locator('#sample-status').innerText(), '0 / 64');
   assert.deepEqual(errors, []);
-  console.log('PASS: MIDI CC64, channel isolation, keyboard independence and disconnect through the application UI.');
+  console.log('PASS: MIDI sustain and pitch bend, channel isolation, keyboard independence and disconnect through the application UI.');
 } finally {
   if (app) {
     // The test can fail with an unsaved project; tear down without triggering its confirmation dialog.

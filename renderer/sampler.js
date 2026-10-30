@@ -7,6 +7,7 @@ export function parseMidiMessage(data) {
   if (kind === 0x90 && velocity > 0) return { type: 'noteOn', note, velocity, channel: status & 0x0f };
   if (kind === 0x80 || (kind === 0x90 && velocity === 0)) return { type: 'noteOff', note, velocity, channel: status & 0x0f };
   if (kind === 0xb0 && note === 64) return { type: 'sustain', value: velocity, channel: status & 0x0f };
+  if (kind === 0xe0) return { type: 'pitchBend', value: note | (velocity << 7), channel: status & 0x0f };
   return null;
 }
 
@@ -27,6 +28,7 @@ export class SamplerEngine {
     this.buffer = null;
     this.zones = [];
     this.voices = new Set();
+    this.pitchBends = new Uint16Array(16).fill(8192);
     this._loadGeneration = 0;
     this._disposed = false;
   }
@@ -57,13 +59,19 @@ export class SamplerEngine {
       const endSeconds = zone.endSeconds ?? buffer.duration;
       const loopStartSeconds = zone.loopStartSeconds ?? startSeconds;
       const loopEndSeconds = zone.loopEndSeconds ?? endSeconds;
+      const zoneGainDb = zone.zoneGainDb ?? 0;
+      const pan = zone.pan ?? 0;
+      const tuneCents = zone.tuneCents ?? 0;
       if (![startSeconds, endSeconds, loopStartSeconds, loopEndSeconds].every(Number.isFinite) ||
           startSeconds < 0 || startSeconds >= endSeconds || endSeconds > buffer.duration ||
           loopStartSeconds < startSeconds || loopStartSeconds >= loopEndSeconds || loopEndSeconds > endSeconds) {
         throw new RangeError('Invalid sample or loop boundaries');
       }
+      if (!Number.isFinite(zoneGainDb) || zoneGainDb < -48 || zoneGainDb > 12 ||
+          !Number.isFinite(pan) || pan < -1 || pan > 1 ||
+          !Number.isFinite(tuneCents) || tuneCents < -1200 || tuneCents > 1200) throw new RangeError('Invalid zone sound controls');
       ids.add(id);
-      return { id, buffer, rootNote, keyLow, keyHigh, velocityLow, velocityHigh, startSeconds, endSeconds, loopStartSeconds, loopEndSeconds };
+      return { id, buffer, rootNote, keyLow, keyHigh, velocityLow, velocityHigh, startSeconds, endSeconds, loopStartSeconds, loopEndSeconds, zoneGainDb, pan, tuneCents };
     });
     this._loadGeneration++;
     this._stopImmediately();
@@ -115,15 +123,32 @@ export class SamplerEngine {
     for (const zone of this.zones) if (zone.legacy) zone.rootNote = next.rootNote;
     for (const voice of this.voices) {
       if (!voice.releasing) {
-        voice.source.playbackRate.setValueAtTime(2 ** ((voice.note - (voice.zone.legacy ? next.rootNote : voice.zone.rootNote)) / 12), this.context.currentTime);
+        voice.source.playbackRate.setValueAtTime(this._playbackRate(voice.note, voice.zone, voice.channel), this.context.currentTime);
       }
     }
   }
 
-  noteOn(note, velocity = 100, voiceId = undefined) {
+  /** Set the standard 14-bit pitch wheel for one MIDI channel (fixed ±2 semitones). */
+  setPitchBend(channel, value) {
+    this._ensureLive();
+    if (!Number.isInteger(channel) || channel < 0 || channel > 15 || !Number.isInteger(value) || value < 0 || value > 16383) throw new RangeError('Invalid MIDI pitch bend');
+    this.pitchBends[channel] = value;
+    for (const voice of this.voices) if (voice.channel === channel) {
+      voice.source.playbackRate.setValueAtTime(this._playbackRate(voice.note, voice.zone, channel), this.context.currentTime);
+    }
+  }
+
+  _playbackRate(note, zone, channel) {
+    const value = channel === undefined ? 8192 : this.pitchBends[channel];
+    const semitones = value < 8192 ? 2 * (value - 8192) / 8192 : 2 * (value - 8192) / 8191;
+    return 2 ** ((note - zone.rootNote + semitones + (zone.tuneCents ?? 0) / 100) / 12);
+  }
+
+  noteOn(note, velocity = 100, voiceId = undefined, channel = undefined) {
     this._ensureLive();
     if (!Number.isInteger(note) || note < 0 || note > 127 || !Number.isInteger(velocity) || velocity < 0 || velocity > 127) throw new RangeError('Invalid MIDI note or velocity');
     if (voiceId !== undefined && (typeof voiceId !== 'string' || !voiceId)) throw new TypeError('Voice id must be a nonempty string');
+    if (channel !== undefined && (!Number.isInteger(channel) || channel < 0 || channel > 15)) throw new RangeError('Invalid MIDI channel');
     if (velocity === 0) { this.noteOff(note, voiceId); return; }
     const matches = this.zones.filter(zone => note >= zone.keyLow && note <= zone.keyHigh && velocity >= zone.velocityLow && velocity <= zone.velocityHigh);
     for (const zone of matches) {
@@ -132,7 +157,11 @@ export class SamplerEngine {
       const now = this.context.currentTime;
       const source = this.context.createBufferSource();
       const gain = this.context.createGain();
-      const peak = velocity / 127;
+      const panner = this.context.createStereoPanner();
+      // Centered StereoPanner applies -3 dB to each channel for mono input.
+      // Compensate so the default pan preserves the previous direct mono output.
+      const monoCenterCompensation = zone.buffer.numberOfChannels === 1 ? Math.SQRT2 : 1;
+      const peak = velocity / 127 * 10 ** ((zone.zoneGainDb ?? 0) / 20) * monoCenterCompensation;
       const attackSeconds = this.parameters.attackMs / 1000;
       const decaySeconds = this.parameters.decayMs / 1000;
       const sustain = peak * this.parameters.sustainLevel;
@@ -140,14 +169,16 @@ export class SamplerEngine {
       source.loop = this.parameters.loop;
       source.loopStart = zone.loopStartSeconds;
       source.loopEnd = zone.loopEndSeconds;
-      source.playbackRate.setValueAtTime(2 ** ((note - zone.rootNote) / 12), now);
+      source.playbackRate.setValueAtTime(this._playbackRate(note, zone, channel), now);
       source.connect(gain);
-      gain.connect(this.master);
+      panner.pan.setValueAtTime(zone.pan ?? 0, now);
+      gain.connect(panner);
+      panner.connect(this.master);
       gain.gain.setValueAtTime(attackSeconds === 0 ? peak : 0, now);
       if (attackSeconds > 0) gain.gain.linearRampToValueAtTime(peak, now + attackSeconds);
       if (decaySeconds > 0) gain.gain.linearRampToValueAtTime(sustain, now + attackSeconds + decaySeconds);
       else gain.gain.setValueAtTime(sustain, now + attackSeconds);
-      const voice = { note, voiceId, zone, source, gain, peak, sustain, startTime: now, attackSeconds, decaySeconds, releasing: false };
+      const voice = { note, voiceId, channel, zone, source, gain, panner, peak, sustain, startTime: now, attackSeconds, decaySeconds, releasing: false };
       this.voices.add(voice);
       source.onended = () => this._cleanVoice(voice);
       try {
@@ -194,6 +225,7 @@ export class SamplerEngine {
     voice.source.onended = null;
     voice.source.disconnect();
     voice.gain.disconnect();
+    voice.panner.disconnect();
   }
 
   _endNow(voice) {
