@@ -17,16 +17,21 @@ function label(value, what, max = 256) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${what}无效`);
 }
 function params(value, version) {
-  fields(value, version === 1 ? ['attackMs', 'releaseMs', 'gainDb', 'loop'] :
-    ['attackMs', 'decayMs', 'sustainLevel', 'releaseMs', 'gainDb', 'loop'], '声音设置');
+  const base = version === 1 ? ['attackMs', 'releaseMs', 'gainDb', 'loop'] :
+    ['attackMs', 'decayMs', 'sustainLevel', 'releaseMs', 'gainDb', 'loop'];
+  fields(value, version === 3 ? [...base, 'filterEnabled', 'filterCutoffHz', 'filterQ'] : base, '声音设置');
   if (!Number.isFinite(value.attackMs) || value.attackMs < 0 || value.attackMs > 10000 ||
       (version !== 1 && (!Number.isFinite(value.decayMs) || value.decayMs < 0 || value.decayMs > 10000 ||
         !Number.isFinite(value.sustainLevel) || value.sustainLevel < 0 || value.sustainLevel > 1)) ||
       !Number.isFinite(value.releaseMs) || value.releaseMs < 0 || value.releaseMs > 10000 ||
-      !Number.isFinite(value.gainDb) || value.gainDb < -96 || value.gainDb > 12 || typeof value.loop !== 'boolean') {
+      !Number.isFinite(value.gainDb) || value.gainDb < -96 || value.gainDb > 12 || typeof value.loop !== 'boolean' ||
+      (version === 3 && (typeof value.filterEnabled !== 'boolean' ||
+        !Number.isFinite(value.filterCutoffHz) || value.filterCutoffHz < 20 || value.filterCutoffHz > 20000 ||
+        !Number.isFinite(value.filterQ) || value.filterQ < 0.1 || value.filterQ > 20))) {
     throw new Error('声音设置超出范围');
   }
-  return version === 1 ? { ...value, decayMs: 0, sustainLevel: 1 } : { ...value };
+  return { ...value, ...(version === 1 ? { decayMs: 0, sustainLevel: 1 } : {}),
+    ...(version < 3 ? { filterEnabled: false, filterCutoffHz: 12000, filterQ: 0.7 } : {}) };
 }
 function metadata(z, ids, binaryKey, version) {
   const baseFields = ['id', 'name', 'rootNote', 'keyLow', 'keyHigh', 'velocityLow', 'velocityHigh', binaryKey];
@@ -88,16 +93,16 @@ function checkText(text) {
 export function serializeProject(project) {
   fields(project, ['name', 'parameters', 'zones'], '工程');
   label(project.name, '工程名称');
-  const parameters = params(project.parameters, 2);
+  const parameters = params(project.parameters, 3);
   if (!Array.isArray(project.zones) || project.zones.length > PROJECT_LIMITS.zones) throw new Error('采样区数量无效');
   const ids = new Set(); let total = 0;
   const zones = project.zones.map(z => {
-    const info = metadata(z, ids, 'wavBytes', 2);
+    const info = metadata(z, ids, 'wavBytes', 3);
     if (!(z.wavBytes instanceof ArrayBuffer)) throw new Error('采样数据无效');
     total += z.wavBytes.byteLength; checkLength(z.wavBytes.byteLength, total);
     return { ...info, wavBase64: bytesToBase64(z.wavBytes) };
   });
-  const text = JSON.stringify({ version: 2, name: project.name, parameters, zones });
+  const text = JSON.stringify({ version: 3, name: project.name, parameters, zones });
   checkText(text);
   return text;
 }
@@ -107,7 +112,7 @@ export function parseProject(text) {
   let source;
   try { source = JSON.parse(text); } catch { throw new Error('工程文件不是有效 JSON'); }
   fields(source, ['version', 'name', 'parameters', 'zones'], '工程');
-  if (source.version !== 1 && source.version !== 2) throw new Error('不支持的工程版本');
+  if (source.version !== 1 && source.version !== 2 && source.version !== 3) throw new Error('不支持的工程版本');
   label(source.name, '工程名称');
   const parameters = params(source.parameters, source.version);
   if (!Array.isArray(source.zones) || source.zones.length > PROJECT_LIMITS.zones) throw new Error('采样区数量无效');

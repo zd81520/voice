@@ -87,7 +87,7 @@ try {
   const saved=await fs.readFile(savePath,'utf8');
   const project=parseProject(saved);
   assert.equal(project.name,'测试多采样');
-  assert.deepEqual(project.parameters,{attackMs:0,decayMs:100,sustainLevel:0.7,releaseMs:180,gainDb:0,loop:true});
+  assert.deepEqual(project.parameters,{attackMs:0,decayMs:100,sustainLevel:0.7,releaseMs:180,gainDb:0,loop:true,filterEnabled:false,filterCutoffHz:12000,filterQ:0.7});
   assert.deepEqual((( {startSeconds,endSeconds,loopStartSeconds,loopEndSeconds} )=>({startSeconds,endSeconds,loopStartSeconds,loopEndSeconds}))(project.zones[0]),{startSeconds:0.01,endSeconds:0.09,loopStartSeconds:0.02,loopEndSeconds:0.08});
   assert.equal(project.zones.length,2);
   assert.equal(project.zones[1].endSeconds,null);
@@ -166,8 +166,16 @@ try {
   assert.deepEqual(Buffer.from(restored.zones[1].wavBytes),b);
   assert.deepEqual(restored.parameters,project.parameters);
   assert.deepEqual(restored.zones.map(({wavBytes,...z})=>z),project.zones.map(({wavBytes,...z})=>z));
+  const version2=JSON.parse(saved); version2.version=2;
+  delete version2.parameters.filterEnabled; delete version2.parameters.filterCutoffHz; delete version2.parameters.filterQ;
+  await window.evaluate(()=>{ document.querySelector('#message').textContent=''; });
+  await window.locator('#project-input').setInputFiles({name:'version2.sampler.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(version2))});
+  await message.getByText('工程已打开。').waitFor();
+  assert.equal(await window.locator('#filter-enabled').isChecked(),false);
+  assert.equal(Number(await window.locator('#zone-start').inputValue()),0.01);
   const legacy=JSON.parse(saved); legacy.version=1;
   delete legacy.parameters.decayMs; delete legacy.parameters.sustainLevel;
+  delete legacy.parameters.filterEnabled; delete legacy.parameters.filterCutoffHz; delete legacy.parameters.filterQ;
   for(const z of legacy.zones) for(const key of ['startSeconds','endSeconds','loopStartSeconds','loopEndSeconds']) delete z[key];
   await window.evaluate(()=>{ document.querySelector('#message').textContent=''; });
   await window.locator('#project-input').setInputFiles({name:'legacy.sampler.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(legacy))});

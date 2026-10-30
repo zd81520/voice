@@ -10,9 +10,10 @@ class Param {
 }
 class Node {
   connect(target) { this.target = target; }
-  disconnect() { this.disconnected = true; }
+  disconnect() { this.disconnected = true; this.target = undefined; }
 }
 class Gain extends Node { constructor() { super(); this.gain = new Param(); } }
+class Filter extends Node { constructor() { super(); this.frequency = new Param(); this.Q = new Param(); } }
 class Source extends Node {
   constructor() { super(); this.playbackRate = new Param(); this.stops = []; }
   start(...args) { this.started = args[0]; this.startArgs = args; }
@@ -22,6 +23,7 @@ class Source extends Node {
 class Context {
   constructor() { this.currentTime = 0; this.destination = {}; this.sources = []; this.decodes = []; }
   createGain() { return new Gain(); }
+  createBiquadFilter() { return new Filter(); }
   createBufferSource() { const source = new Source(); this.sources.push(source); return source; }
   decodeAudioData(data) { return new Promise((resolve, reject) => this.decodes.push({ data, resolve, reject })); }
 }
@@ -299,4 +301,50 @@ test('invalid boundaries reject a replacement without stopping current voices', 
   assert.equal(context.sources[0].stops.length, 0);
   assert.equal(engine.zones[0].id, 'valid');
   assert.deepEqual([engine.zones[0].startSeconds, engine.zones[0].endSeconds, engine.zones[0].loopStartSeconds, engine.zones[0].loopEndSeconds], [0, 1, 0, 1]);
+});
+
+
+test('lowpass is bypassed by default, updates playing voices and returns to bypass', async () => {
+  const { context, engine } = await ready();
+  assert.equal(engine.master.target, context.destination);
+  assert.equal(engine.filter.target, context.destination);
+  assert.equal(engine.filter.type, 'lowpass');
+  assert.equal(engine.filter.frequency.value, 12000);
+  assert.equal(engine.filter.Q.value, 0.7);
+  engine.noteOn(60, 127);
+  const voice = [...engine.voices][0];
+  assert.equal(voice.gain.target, engine.master);
+  context.currentTime = 0.5;
+  engine.setParameters({ filterEnabled: true, filterCutoffHz: 500, filterQ: 2 });
+  assert.equal(engine.master.target, engine.filter);
+  assert.deepEqual(engine.filter.frequency.events.at(-1), ['set', 500, 0.5]);
+  assert.deepEqual(engine.filter.Q.events.at(-1), ['set', 2, 0.5]);
+  assert.equal(context.sources[0].stops.length, 0);
+  engine.setParameters({ filterEnabled: false });
+  assert.equal(engine.master.target, context.destination);
+  assert.equal(context.sources[0].stops.length, 0);
+  engine.dispose();
+  assert.equal(engine.filter.disconnected, true);
+  assert.equal(engine.master.target, undefined);
+});
+
+test('filter parameter validation leaves audio graph and values unchanged on failure', async () => {
+  const { engine } = await ready();
+  engine.setParameters({ filterEnabled: true, filterCutoffHz: 400, filterQ: 1 });
+  const previous = { ...engine.parameters };
+  const events = engine.filter.frequency.events.length;
+  for (const changes of [
+    { filterEnabled: 1 }, { filterCutoffHz: 19 }, { filterCutoffHz: 20001 },
+    { filterCutoffHz: NaN }, { filterQ: 0.09 }, { filterQ: 20.01 }, { filterQ: Infinity },
+  ]) {
+    assert.throws(() => engine.setParameters({ ...changes, filterEnabled: changes.filterEnabled ?? false }), RangeError);
+    assert.deepEqual(engine.parameters, previous);
+    assert.equal(engine.master.target, engine.filter);
+    assert.equal(engine.filter.frequency.events.length, events);
+  }
+  engine.setParameters({ filterCutoffHz: 20, filterQ: 0.1 });
+  engine.setParameters({ filterCutoffHz: 20000, filterQ: 20 });
+  assert.equal(engine.filter.frequency.value, 20000);
+  assert.equal(engine.filter.Q.value, 20);
+  engine.dispose();
 });

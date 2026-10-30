@@ -8,7 +8,7 @@ const $ = id => document.getElementById(id);
 const noteNames = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
 const noteLabel = n => `${noteNames[n % 12]}${Math.floor(n / 12) - 1}`;
 const MAX_FILE = 32 * 1024 * 1024, MAX_TOTAL = 40 * 1024 * 1024, MAX_JSON = 64 * 1024 * 1024, MAX_ZONES = 64;
-const initialParams = { attackMs: 5, decayMs: 0, sustainLevel: 1, releaseMs: 200, gainDb: -6, loop: false };
+const initialParams = { attackMs: 5, decayMs: 0, sustainLevel: 1, releaseMs: 200, gainDb: -6, loop: false, filterEnabled: false, filterCutoffHz: 12000, filterQ: 0.7 };
 let context, engine, zones = [], selectedId = null, dirty = false, editorDirty = false, busy = false, audioToggleBusy = false;
 let midiAccess, selectedInput;
 const held = new Map(), pointers = new Map(), keyElements = new Map();
@@ -29,9 +29,9 @@ const keyMap = new Map([...['z','s','x','d','c','v','g','b','h','n','j','m','q',
 function status(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
 function setDirty(value = true) { dirty = value; $('dirty-status').textContent = value ? '● 未保存' : '已保存'; }
 function setBusy(value) { busy = value; for (const id of ['project-controls','zone-controls','sound-controls']) $(id).disabled = value; }
-function params() { return { attackMs: +$('attack').value, decayMs: +$('decay').value, sustainLevel: +$('sustain').value, releaseMs: +$('release').value, gainDb: +$('gain').value, loop: $('loop').checked }; }
-function applyParameters() { const p = params(); $('attack-output').textContent = `${p.attackMs} ms`; $('decay-output').textContent = `${p.decayMs} ms`; $('sustain-output').textContent = `${Math.round(p.sustainLevel * 100)}%`; $('release-output').textContent = `${p.releaseMs} ms`; $('gain-output').textContent = `${p.gainDb} dB`; engine?.setParameters(p); }
-function setParameters(p) { $('attack').value = p.attackMs; $('decay').value = p.decayMs ?? 0; $('sustain').value = p.sustainLevel ?? 1; $('release').value = p.releaseMs; $('gain').value = p.gainDb; $('loop').checked = p.loop; applyParameters(); }
+function params() { return { attackMs: +$('attack').value, decayMs: +$('decay').value, sustainLevel: +$('sustain').value, releaseMs: +$('release').value, gainDb: +$('gain').value, loop: $('loop').checked, filterEnabled: $('filter-enabled').checked, filterCutoffHz: +$('filter-cutoff').value, filterQ: +$('filter-q').value }; }
+function applyParameters() { const p = params(); $('attack-output').textContent = `${p.attackMs} ms`; $('decay-output').textContent = `${p.decayMs} ms`; $('sustain-output').textContent = `${Math.round(p.sustainLevel * 100)}%`; $('release-output').textContent = `${p.releaseMs} ms`; $('gain-output').textContent = `${p.gainDb} dB`; $('filter-cutoff-output').textContent = `${Number(p.filterCutoffHz.toFixed(2))} Hz`; $('filter-q-output').textContent = String(Number(p.filterQ.toFixed(2))); engine?.setParameters(p); }
+function setParameters(p) { $('attack').value = p.attackMs; $('decay').value = p.decayMs ?? 0; $('sustain').value = p.sustainLevel ?? 1; $('release').value = p.releaseMs; $('gain').value = p.gainDb; $('loop').checked = p.loop; $('filter-enabled').checked = p.filterEnabled ?? false; $('filter-cutoff').value = p.filterCutoffHz ?? 12000; $('filter-q').value = p.filterQ ?? 0.7; applyParameters(); }
 function makeEngine() { if (!context) { const AudioContextClass = window.AudioContext || window.webkitAudioContext; if (!AudioContextClass) throw new Error('此环境不支持 Web Audio。'); context = new AudioContextClass(); engine = new SamplerEngine(context); applyParameters(); context.addEventListener('statechange', updateAudioButton); } return context; }
 function updateAudioButton() { $('enable-audio').textContent = context?.state === 'running' ? '暂停音频' : '启用音频'; }
 async function resumeAudio() { try { const ctx = makeEngine(); if (ctx.state !== 'running') await ctx.resume(); updateAudioButton(); return ctx.state === 'running'; } catch (error) { status(`无法启用音频：${error.message}`, true); return false; } }
@@ -61,7 +61,7 @@ $('enable-midi').addEventListener('click',async () => { if (!navigator.requestMI
 $('midi-device').addEventListener('change',chooseMidi);
 $('enable-audio').addEventListener('click',async () => { if (audioToggleBusy) return; audioToggleBusy = true; $('enable-audio').disabled = true; try { if (context?.state === 'running') { releaseAll(); await context.suspend(); updateAudioButton(); status('音频已暂停。'); } else if (await resumeAudio()) status(zones.length ? '音频已启用，可以开始演奏。' : '音频已启用，请添加 WAV。'); } catch (error) { status(`音频状态切换失败：${error.message}`, true); } finally { audioToggleBusy = false; $('enable-audio').disabled = false; } });
 $('stop-notes').addEventListener('click',() => { releaseAll(); status('已释放所有音符。'); });
-for (const id of ['attack','decay','sustain','release','gain','loop']) $(id).addEventListener('input',() => { applyParameters(); setDirty(); });
+for (const id of ['attack','decay','sustain','release','gain','loop','filter-enabled','filter-cutoff','filter-q']) $(id).addEventListener('input',() => { applyParameters(); setDirty(); });
 $('project-name').addEventListener('input',() => setDirty());
 for (const id of ['zone-name','zone-root','zone-key-low','zone-key-high','zone-velocity-low','zone-velocity-high','zone-start','zone-end','zone-loop-start','zone-loop-end']) $(id).addEventListener('input',() => { editorDirty = true; setDirty(); try { const edited = currentEditedZone(); if (edited) waveform.setRanges(edited); } catch { /* Retain the last valid overview while editing. */ } });
 $('apply-zone').addEventListener('click',commitEditor);

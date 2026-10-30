@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { serializeProject, parseProject, PROJECT_LIMITS } from '../renderer/project.js';
 
-const parameters = { attackMs: 5, decayMs: 200, sustainLevel: 0.7, releaseMs: 100, gainDb: -6, loop: false };
+const filterDefaults = { filterEnabled: false, filterCutoffHz: 12000, filterQ: 0.7 };
+const parameters = { attackMs: 5, decayMs: 200, sustainLevel: 0.7, releaseMs: 100, gainDb: -6, loop: false, filterEnabled: true, filterCutoffHz: 2500, filterQ: 1.2 };
 const zone = (id = 'one') => ({ id, name: '钢琴 C4.wav', rootNote: 60, keyLow: 48, keyHigh: 72, velocityLow: 1, velocityHigh: 127, startSeconds: 0.1, endSeconds: 1.5, loopStartSeconds: 0.4, loopEndSeconds: 1.2, wavBytes: Uint8Array.from([0, 1, 2, 253, 254, 255]).buffer });
 const project = () => ({ name: '我的音色', parameters: { ...parameters }, zones: [zone(), { ...zone('two'), keyLow: 73, keyHigh: 96, velocityLow: 80 }] });
 
@@ -13,7 +14,7 @@ test('portable project round trip keeps sample bytes, Unicode, mappings and sett
   assert.equal(parsed.name, original.name);
   assert.deepEqual(parsed.parameters, original.parameters);
   assert.deepEqual(parsed.zones, original.zones);
-  assert.equal(JSON.parse(text).version, 2);
+  assert.equal(JSON.parse(text).version, 3);
 });
 
 test('version 1 projects migrate to matching envelope and full sample defaults', () => {
@@ -23,17 +24,39 @@ test('version 1 projects migrate to matching envelope and full sample defaults',
       velocityLow: 1, velocityHigh: 127, wavBase64: 'AAEC/f7/' }],
   };
   const migrated = parseProject(JSON.stringify(legacy));
-  assert.deepEqual(migrated.parameters, { ...legacy.parameters, decayMs: 0, sustainLevel: 1 });
+  assert.deepEqual(migrated.parameters, { ...legacy.parameters, decayMs: 0, sustainLevel: 1, ...filterDefaults });
   assert.deepEqual(migrated.zones[0], { ...zone(), name: '钢琴.wav', startSeconds: 0,
     endSeconds: null, loopStartSeconds: 0, loopEndSeconds: null });
   // Null ends follow the sample's actual decoded duration on each device.
   assert.deepEqual(parseProject(serializeProject(migrated)), migrated);
 });
 
-test('v2 round trip preserves independent playback and loop ends following the sample', () => {
+test('version 2 projects load filter defaults without changing their sample ends', () => {
+  for (const [endSeconds, loopEndSeconds] of [[null, null], [null, 1.2], [1.5, null], [1.5, 1.2]]) {
+    const legacy = JSON.parse(serializeProject(project()));
+    legacy.version = 2;
+    for (const key of Object.keys(filterDefaults)) delete legacy.parameters[key];
+    Object.assign(legacy.zones[0], { endSeconds, loopEndSeconds });
+    const migrated = parseProject(JSON.stringify(legacy));
+    assert.deepEqual(migrated.parameters, { ...legacy.parameters, ...filterDefaults });
+    assert.equal(migrated.zones[0].endSeconds, endSeconds);
+    assert.equal(migrated.zones[0].loopEndSeconds, loopEndSeconds);
+    assert.deepEqual(parseProject(serializeProject(migrated)), migrated);
+  }
+});
+
+test('v3 round trip preserves independent playback and loop ends following the sample', () => {
   for (const [endSeconds, loopEndSeconds] of [[null, null], [null, 1.2], [1.5, null], [1.5, 1.2]]) {
     const original = project();
     Object.assign(original.zones[0], { endSeconds, loopEndSeconds });
+    assert.deepEqual(parseProject(serializeProject(original)), original);
+  }
+});
+
+test('v3 accepts both inclusive filter parameter limits', () => {
+  for (const [filterCutoffHz, filterQ] of [[20, 0.1], [20000, 20]]) {
+    const original = project();
+    Object.assign(original.parameters, { filterCutoffHz, filterQ });
     assert.deepEqual(parseProject(serializeProject(original)), original);
   }
 });
@@ -54,7 +77,7 @@ test('validate knowable ordering even when ends follow sample duration', () => {
 test('reject unsupported version, malformed schema, duplicate IDs and invalid mappings', () => {
   const source = JSON.parse(serializeProject(project()));
   for (const change of [
-    o => o.version = 3,
+    o => o.version = 4,
     o => o.extra = true,
     o => o.zones[1].id = o.zones[0].id,
     o => o.zones[0].keyLow = 90,
@@ -62,6 +85,12 @@ test('reject unsupported version, malformed schema, duplicate IDs and invalid ma
     o => o.parameters.gainDb = 999,
     o => o.parameters.decayMs = -1,
     o => o.parameters.sustainLevel = 1.01,
+    o => o.parameters.filterEnabled = 1,
+    o => o.parameters.filterCutoffHz = 19.99,
+    o => o.parameters.filterCutoffHz = 20001,
+    o => o.parameters.filterQ = 0.09,
+    o => o.parameters.filterQ = 20.1,
+    o => delete o.parameters.filterEnabled,
     o => o.zones[0].startSeconds = -0.1,
     o => o.zones[0].startSeconds = o.zones[0].endSeconds,
     o => o.zones[0].loopStartSeconds = o.zones[0].startSeconds - 0.01,
@@ -79,6 +108,8 @@ test('reject non-finite values before serializing', () => {
   for (const change of [
     p => p.parameters.decayMs = NaN,
     p => p.parameters.sustainLevel = Infinity,
+    p => p.parameters.filterCutoffHz = NaN,
+    p => p.parameters.filterQ = Infinity,
     p => p.zones[0].startSeconds = NaN,
     p => p.zones[0].endSeconds = Infinity,
     p => p.zones[0].loopStartSeconds = -Infinity,

@@ -17,7 +17,12 @@ export class SamplerEngine {
     this.context = audioContext;
     this.master = audioContext.createGain();
     this.master.connect(audioContext.destination);
-    this.parameters = { rootNote: 60, attackMs: 5, decayMs: 0, sustainLevel: 1, releaseMs: 100, gainDb: -6, loop: false };
+    this.filter = audioContext.createBiquadFilter();
+    this.filter.type = 'lowpass';
+    this.filter.connect(audioContext.destination);
+    this.parameters = { rootNote: 60, attackMs: 5, decayMs: 0, sustainLevel: 1, releaseMs: 100, gainDb: -6, loop: false, filterEnabled: false, filterCutoffHz: 12000, filterQ: 0.7 };
+    this.filter.frequency.value = this.parameters.filterCutoffHz;
+    this.filter.Q.value = this.parameters.filterQ;
     this.master.gain.value = 10 ** (this.parameters.gainDb / 20);
     this.buffer = null;
     this.zones = [];
@@ -92,10 +97,19 @@ export class SamplerEngine {
         !Number.isFinite(next.decayMs) || next.decayMs < 0 || next.decayMs > 10000 ||
         !Number.isFinite(next.sustainLevel) || next.sustainLevel < 0 || next.sustainLevel > 1 ||
         !Number.isFinite(next.releaseMs) || next.releaseMs < 0 || next.releaseMs > 10000 ||
-        !Number.isFinite(next.gainDb) || next.gainDb < -96 || next.gainDb > 12 || typeof next.loop !== 'boolean') {
+        !Number.isFinite(next.gainDb) || next.gainDb < -96 || next.gainDb > 12 || typeof next.loop !== 'boolean' ||
+        typeof next.filterEnabled !== 'boolean' || !Number.isFinite(next.filterCutoffHz) || next.filterCutoffHz < 20 || next.filterCutoffHz > 20000 ||
+        !Number.isFinite(next.filterQ) || next.filterQ < 0.1 || next.filterQ > 20) {
       throw new RangeError('Invalid sampler parameters');
     }
+    const wasFilterEnabled = this.parameters.filterEnabled;
     this.parameters = next;
+    this.filter.frequency.setValueAtTime(next.filterCutoffHz, this.context.currentTime);
+    this.filter.Q.setValueAtTime(next.filterQ, this.context.currentTime);
+    if (next.filterEnabled !== wasFilterEnabled) {
+      this.master.disconnect();
+      this.master.connect(next.filterEnabled ? this.filter : this.context.destination);
+    }
     this.master.gain.setValueAtTime(10 ** (next.gainDb / 20), this.context.currentTime);
     // Explicit zone roots stay independent of the legacy single-sample root.
     for (const zone of this.zones) if (zone.legacy) zone.rootNote = next.rootNote;
@@ -199,5 +213,6 @@ export class SamplerEngine {
     this.buffer = null;
     this.zones = [];
     this.master.disconnect();
+    this.filter.disconnect();
   }
 }
