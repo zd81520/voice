@@ -9,7 +9,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const APP_ORIGIN = 'sample://app';
-const FILES = new Set(['/index.html', '/styles.css', '/app.js', '/sampler.js', '/project.js', '/wav-guard.js', '/waveform.js', '/midi-performance.js']);
+const FILES = new Set(['/index.html', '/styles.css', '/app.js', '/sampler.js', '/project.js', '/wav-guard.js', '/waveform.js', '/midi-performance.js', '/zone-mapping.js', '/zone-map-view.js']);
 const MAX_PROJECT_BYTES = 64 * 1024 * 1024;
 let mainWindow;
 

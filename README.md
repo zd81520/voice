@@ -5,6 +5,7 @@
 ## 功能
 
 - 导入 WAV，将多个采样映射到不同键区和力度范围，支持音区叠加。
+- 查看键位与力度映射图，并根据采样根音自动分配键区。
 - 设置每个音区的采样播放和循环范围，以及全局 ADSR 包络和音量。
 - 使用全局低通滤波器调节声音的亮度和共振。
 - 对每个音区独立设置音量、左右声像与微调；MIDI 弯音轮可在演奏时改变音高。
@@ -27,6 +28,7 @@ npm test
 node tests/multisample-e2e.mjs
 node tests/midi-e2e.mjs
 node tests/filter-e2e.mjs
+node tests/zone-map-e2e.mjs
 node tests/close-guard-e2e.mjs
 ```
 
