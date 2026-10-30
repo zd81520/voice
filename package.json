@@ -1,0 +1,48 @@
+{
+  "name": "sample-workbench",
+  "productName": "采样工作台",
+  "version": "0.3.0",
+  "private": true,
+  "description": "本地 WAV 采样器与 MIDI 演奏工具",
+  "type": "module",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "package": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "44.10.0",
+    "electron-builder": "26.15.3",
+    "playwright": "1.58.2"
+  },
+  "build": {
+    "appId": "local.sampleworkbench.app",
+    "productName": "采样工作台",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signExecutable": false,
+      "artifactName": "SampleWorkbench-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "采样工作台",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
